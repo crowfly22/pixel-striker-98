@@ -14,7 +14,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#000;font-family:'Co
 <canvas id="c"></canvas>
 <script>
 // ============================================================
-// PIXEL STRIKER '98 — Retro Arcade Soccer Shooter
+// PIXEL STRIKER '98 — Retro Arcade Soccer Shooter (v2 Sprite Edition)
 // ============================================================
 const C = document.getElementById('c');
 const X = C.getContext('2d');
@@ -25,7 +25,52 @@ const buf = document.createElement('canvas');
 buf.width = W; buf.height = H;
 const G = buf.getContext('2d');
 
-// Audio
+// ============================================================
+// SPRITE SYSTEM
+// ============================================================
+const sprites = {};
+const spriteList = [
+    { name: 'goalkeeper', src: 'sprites/goalkeeper.png' },
+    { name: 'player_legs', src: 'sprites/player_legs.png' },
+    { name: 'ball', src: 'sprites/ball.png' },
+    { name: 'field', src: 'sprites/field.png' },
+    { name: 'field_tiles', src: 'sprites/field_tiles.png' },
+    { name: 'effects', src: 'sprites/effects.png' }
+];
+
+let spritesLoaded = 0;
+let allSpritesLoaded = false;
+
+function loadSprites() {
+    return new Promise((resolve) => {
+        let loaded = 0;
+        spriteList.forEach(s => {
+            const img = new Image();
+            img.onload = () => {
+                sprites[s.name] = img;
+                loaded++;
+                if (loaded === spriteList.length) {
+                    allSpritesLoaded = true;
+                    console.log('All sprites loaded!');
+                    resolve();
+                }
+            };
+            img.onerror = () => {
+                console.error(`Failed to load: ${s.src}`);
+                loaded++;
+                if (loaded === spriteList.length) {
+                    allSpritesLoaded = true;
+                    resolve();
+                }
+            };
+            img.src = s.src;
+        });
+    });
+}
+
+// ============================================================
+// AUDIO SYSTEM
+// ============================================================
 const actx = new (window.AudioContext || window.webkitAudioContext)();
 
 function playTone(freq, dur, type = 'square', vol = 0.15) {
@@ -70,7 +115,9 @@ function missSound() {
     setTimeout(() => playTone(200, 0.2, 'triangle', 0.08), 100);
 }
 
-// Game state
+// ============================================================
+// GAME STATE
+// ============================================================
 let state = 'MENU'; // MENU, AIMING, KICKING, FLIGHT, RESULT, GAMEOVER
 let score = 0, shots = 0, streak = 0, bestStreak = 0, round = 0;
 const MAX_ROUNDS = 10;
@@ -93,6 +140,8 @@ let kickPhase = 0; // 0=ready, 1=windup, 2=strike, 3=follow
 let legAngle = 0;
 let crtIntensity = 0.3;
 let frameCount = 0;
+let ballFrame = 0;
+let legFrame = 0;
 
 // Crowd data
 const crowdRows = [];
@@ -115,7 +164,11 @@ const lights = [
     {x: 30, y: 10}, {x: 110, y: 8}, {x: 210, y: 8}, {x: 290, y: 10}
 ];
 
-// Field stripes
+// ============================================================
+// DRAWING FUNCTIONS
+// ============================================================
+
+// Draw field background (using sprite)
 function drawField() {
     // Sky gradient
     const sky = G.createLinearGradient(0, 0, 0, 80);
@@ -162,20 +215,34 @@ function drawField() {
     G.fillStyle = '#555';
     G.fillRect(0, 60, W, 1);
 
-    // Field perspective
-    const fieldTop = 62;
-    const fieldBot = H;
-    const fieldGrad = G.createLinearGradient(0, fieldTop, 0, fieldBot);
-    fieldGrad.addColorStop(0, '#1a5c1a');
-    fieldGrad.addColorStop(0.3, '#2d7d2d');
-    fieldGrad.addColorStop(0.6, '#1a6b1a');
-    fieldGrad.addColorStop(1, '#0d4d0d');
-    G.fillStyle = fieldGrad;
-    G.fillRect(0, fieldTop, W, fieldBot - fieldTop);
+    // Field perspective (using field sprite if loaded)
+    if (sprites.field) {
+        // Draw field sprite scaled to fit bottom portion
+        const fieldTop = 62;
+        const fieldH = H - fieldTop;
+        G.drawImage(sprites.field, 0, fieldTop, W, fieldH);
+        // Overlay for perspective effect
+        const overlay = G.createLinearGradient(0, fieldTop, 0, H);
+        overlay.addColorStop(0, 'rgba(0,0,0,0)');
+        overlay.addColorStop(0.5, 'rgba(0,0,0,0.2)');
+        overlay.addColorStop(1, 'rgba(0,0,0,0.4)');
+        G.fillStyle = overlay;
+        G.fillRect(0, fieldTop, W, fieldH);
+    } else {
+        // Fallback: procedural field
+        const fieldTop = 62;
+        const fieldGrad = G.createLinearGradient(0, fieldTop, 0, H);
+        fieldGrad.addColorStop(0, '#1a5c1a');
+        fieldGrad.addColorStop(0.3, '#2d7d2d');
+        fieldGrad.addColorStop(0.6, '#1a6b1a');
+        fieldGrad.addColorStop(1, '#0d4d0d');
+        G.fillStyle = fieldGrad;
+        G.fillRect(0, fieldTop, W, H - fieldTop);
+    }
 
     // Field stripes (perspective)
     for (let i = 0; i < 8; i++) {
-        const y1 = fieldTop + i * 22;
+        const y1 = 62 + i * 22;
         const y2 = y1 + 11;
         if (i % 2 === 0) {
             G.fillStyle = 'rgba(255,255,255,0.03)';
@@ -225,7 +292,6 @@ function drawGoal() {
     const gx1 = 100, gx2 = W - 100;
     const gy = 68;
     const gh = 30;
-    const depth = 15;
 
     // Net (back)
     G.fillStyle = 'rgba(200,200,200,0.15)';
@@ -286,83 +352,99 @@ function drawGoal() {
     }
 }
 
-// Draw goalkeeper
+// Draw goalkeeper (using sprite)
 function drawKeeper() {
+    if (!sprites.goalkeeper) return;
+    
     const kx = keeperX;
     const ky = 78 + keeperDiveY;
     
-    // Keeper body
-    G.fillStyle = '#f39c12'; // Orange jersey
-    G.fillRect(kx - 4, ky - 6, 8, 10);
+    // Sprite sheet: 3 frames in 1 row
+    // Frame 0: idle, Frame 1: dive left, Frame 2: dive right
+    const srcW = sprites.goalkeeper.width / 3;
+    const srcH = sprites.goalkeeper.height;
     
-    // Shorts
-    G.fillStyle = '#2c3e50';
-    G.fillRect(kx - 3, ky + 4, 6, 4);
-    
-    // Head
-    G.fillStyle = '#f0d0a0';
-    G.fillRect(kx - 2, ky - 10, 5, 5);
-    
-    // Cap
-    G.fillStyle = '#e74c3c';
-    G.fillRect(kx - 3, ky - 11, 7, 2);
-    
-    // Gloves
+    let frame = 0;
     if (keeperDiving) {
-        // Diving pose - arms spread
-        G.fillStyle = '#2ecc71';
-        G.fillRect(kx - 10 + keeperDiveDir * 5, ky - 4, 5, 3);
-        G.fillRect(kx + 5 + keeperDiveDir * 5, ky - 4, 5, 3);
-    } else {
-        // Ready pose
-        G.fillStyle = '#2ecc71';
-        G.fillRect(kx - 7, ky - 3, 4, 3);
-        G.fillRect(kx + 3, ky - 3, 4, 3);
+        frame = keeperDiveDir < 0 ? 1 : 2;
     }
     
-    // Legs
-    G.fillStyle = '#f0d0a0';
-    G.fillRect(kx - 3, ky + 8, 3, 4);
-    G.fillRect(kx + 1, ky + 8, 3, 4);
+    const srcX = frame * srcW;
+    const destW = 24;
+    const destH = 36;
     
-    // Boots
-    G.fillStyle = '#222';
-    G.fillRect(kx - 3, ky + 11, 3, 2);
-    G.fillRect(kx + 1, ky + 11, 3, 2);
+    G.drawImage(
+        sprites.goalkeeper,
+        srcX, 0, srcW, srcH,
+        kx - destW/2, ky - destH + 10, destW, destH
+    );
 }
 
-// Draw player legs/cleats (first person)
+// Draw player legs (using sprite)
 function drawPlayerLegs() {
     const baseY = H - 20;
     const bob = Math.sin(camBob) * 2;
     
-    // Left leg
-    G.fillStyle = '#2c3e50'; // Shorts
-    G.fillRect(120, baseY - 30 + bob, 18, 20);
-    G.fillStyle = '#f0d0a0'; // Shin
-    G.fillRect(122, baseY - 10 + bob, 14, 15);
-    G.fillStyle = '#111'; // Sock
-    G.fillRect(122, baseY + 5 + bob, 14, 8);
-    G.fillStyle = '#e74c3c'; // Cleats
-    G.fillRect(120, baseY + 12 + bob, 16, 5);
-    G.fillStyle = '#c0392b';
-    G.fillRect(121, baseY + 14 + bob, 14, 2);
-
-    // Right leg (kicking leg)
-    const kickOffset = kickPhase === 1 ? -legAngle * 15 : kickPhase === 2 ? legAngle * 25 : kickPhase === 3 ? legAngle * 10 : 0;
-    const kickY = baseY - 30 + bob + kickOffset * 0.3;
+    if (sprites.player_legs) {
+        // Sprite sheet: 6 columns × 3 rows = 16 frames
+        const cols = 6;
+        const srcW = sprites.player_legs.width / cols;
+        const srcH = sprites.player_legs.height / 3;
+        
+        // Select frame based on kick phase
+        let frame = 0;
+        if (state === 'AIMING') {
+            frame = Math.floor(frameCount / 8) % 4; // Idle animation
+        } else if (state === 'KICKING') {
+            if (kickPhase === 1) frame = 4 + Math.floor(legAngle * 3); // Windup
+            else if (kickPhase === 2) frame = 8; // Strike
+            else if (kickPhase === 3) frame = 9 + Math.floor(legAngle * 2); // Follow
+        } else if (state === 'FLIGHT') {
+            frame = 12; // Follow through
+        }
+        
+        const col = frame % cols;
+        const row = Math.floor(frame / cols);
+        const srcX = col * srcW;
+        const srcY = row * srcH;
+        
+        const destW = 40;
+        const destH = 60;
+        
+        // Draw left leg
+        G.drawImage(
+            sprites.player_legs,
+            srcX, srcY, srcW, srcH,
+            100, baseY - 40 + bob, destW, destH
+        );
+        
+        // Draw right leg (slightly offset)
+        G.drawImage(
+            sprites.player_legs,
+            srcX, srcY, srcW, srcH,
+            W - 140, baseY - 40 + bob, destW, destH
+        );
+    } else {
+        // Fallback: procedural legs
+        G.fillStyle = '#2c3e50';
+        G.fillRect(120, baseY - 30 + bob, 18, 20);
+        G.fillStyle = '#f0d0a0';
+        G.fillRect(122, baseY - 10 + bob, 14, 15);
+        G.fillStyle = '#111';
+        G.fillRect(122, baseY + 5 + bob, 14, 8);
+        G.fillStyle = '#e74c3c';
+        G.fillRect(120, baseY + 12 + bob, 16, 5);
+        
+        G.fillStyle = '#2c3e50';
+        G.fillRect(W - 138, baseY - 30 + bob, 18, 20);
+        G.fillStyle = '#f0d0a0';
+        G.fillRect(W - 136, baseY - 10 + bob, 14, 15);
+        G.fillStyle = '#111';
+        G.fillRect(W - 136, baseY + 5 + bob, 14, 8);
+        G.fillStyle = '#e74c3c';
+        G.fillRect(W - 138, baseY + 12 + bob, 16, 5);
+    }
     
-    G.fillStyle = '#2c3e50';
-    G.fillRect(W - 138, kickY, 18, 20);
-    G.fillStyle = '#f0d0a0';
-    G.fillRect(W - 136, kickY + 20, 14, 15);
-    G.fillStyle = '#111';
-    G.fillRect(W - 136, kickY + 35, 14, 8);
-    G.fillStyle = '#e74c3c';
-    G.fillRect(W - 138, kickY + 42, 16, 5);
-    G.fillStyle = '#c0392b';
-    G.fillRect(W - 137, kickY + 44, 14, 2);
-
     // Ball at feet (when not kicked yet)
     if (state === 'AIMING') {
         const ballScreenX = W / 2;
@@ -371,7 +453,7 @@ function drawPlayerLegs() {
     }
 }
 
-// Ball sprite
+// Ball sprite (using sprite sheet)
 function drawBallSprite(x, y, r) {
     // Shadow
     G.fillStyle = 'rgba(0,0,0,0.3)';
@@ -379,27 +461,43 @@ function drawBallSprite(x, y, r) {
     G.ellipse(x + 1, y + r + 1, r * 0.8, r * 0.3, 0, 0, Math.PI * 2);
     G.fill();
 
-    // Ball
-    G.fillStyle = '#fff';
-    G.beginPath();
-    G.arc(x, y, r, 0, Math.PI * 2);
-    G.fill();
-
-    // Pentagon pattern
-    G.fillStyle = '#333';
-    const pr = r * 0.35;
-    for (let i = 0; i < 5; i++) {
-        const a = (i / 5) * Math.PI * 2 - Math.PI / 2;
-        const px = x + Math.cos(a) * r * 0.55;
-        const py = y + Math.sin(a) * r * 0.55;
+    if (sprites.ball) {
+        // Sprite sheet: 6 columns × 3 rows = 18 frames
+        const cols = 6;
+        const srcW = sprites.ball.width / cols;
+        const srcH = sprites.ball.height / 3;
+        
+        const frame = ballFrame % 18;
+        const col = frame % cols;
+        const row = Math.floor(frame / cols);
+        const srcX = col * srcW;
+        const srcY = row * srcH;
+        
+        const destSize = r * 2.5;
+        
+        G.drawImage(
+            sprites.ball,
+            srcX, srcY, srcW, srcH,
+            x - destSize/2, y - destSize/2, destSize, destSize
+        );
+    } else {
+        // Fallback: procedural ball
+        G.fillStyle = '#fff';
         G.beginPath();
-        G.arc(px, py, pr, 0, Math.PI * 2);
+        G.arc(x, y, r, 0, Math.PI * 2);
         G.fill();
+
+        G.fillStyle = '#333';
+        const pr = r * 0.35;
+        for (let i = 0; i < 5; i++) {
+            const a = (i / 5) * Math.PI * 2 - Math.PI / 2;
+            const px = x + Math.cos(a) * r * 0.55;
+            const py = y + Math.sin(a) * r * 0.55;
+            G.beginPath();
+            G.arc(px, py, pr, 0, Math.PI * 2);
+            G.fill();
+        }
     }
-    G.fillStyle = '#333';
-    G.beginPath();
-    G.arc(x, y, pr, 0, Math.PI * 2);
-    G.fill();
 }
 
 // Draw ball in flight
@@ -493,7 +591,6 @@ function drawCrosshair() {
     G.strokeStyle = '#fff';
     G.lineWidth = 0.5;
     
-    // Cross
     G.beginPath();
     G.moveTo(cx - 5, cy); G.lineTo(cx - 2, cy);
     G.moveTo(cx + 2, cy); G.lineTo(cx + 5, cy);
@@ -501,14 +598,12 @@ function drawCrosshair() {
     G.moveTo(cx, cy + 2); G.lineTo(cx, cy + 5);
     G.stroke();
     
-    // Dot
     G.fillStyle = '#ff0';
     G.fillRect(cx - 0.5, cy - 0.5, 1, 1);
 }
 
 // HUD
 function drawHUD() {
-    // Score panel
     G.fillStyle = 'rgba(0,0,0,0.7)';
     G.fillRect(0, 0, W, 16);
     
@@ -521,7 +616,6 @@ function drawHUD() {
     G.textAlign = 'right';
     G.fillText(`ROUND: ${round}/${MAX_ROUNDS}`, W - 4, 11);
 
-    // Best streak
     if (bestStreak > 0) {
         G.textAlign = 'center';
         G.fillStyle = '#f1c40f';
@@ -529,7 +623,6 @@ function drawHUD() {
         G.fillText(`BEST: ${bestStreak}`, W / 2, 24);
     }
 
-    // Streak fire effect
     if (streak >= 3) {
         G.fillStyle = `rgba(255,${100 + Math.sin(frameCount * 0.2) * 50},0,${0.3 + Math.sin(frameCount * 0.1) * 0.1})`;
         G.font = '10px monospace';
@@ -576,7 +669,6 @@ function drawResult() {
     G.textAlign = 'center';
     G.fillText(text, W / 2, H / 2 - 20);
 
-    // Subtext
     G.fillStyle = '#fff';
     G.font = '8px monospace';
     if (outcome === 'GOAL' || outcome === 'CURVED') {
@@ -589,20 +681,17 @@ function drawResult() {
 
 // CRT effect
 function drawCRT() {
-    // Scanlines
     G.fillStyle = `rgba(0,0,0,${crtIntensity * 0.3})`;
     for (let y = 0; y < H; y += 2) {
         G.fillRect(0, y, W, 1);
     }
 
-    // Vignette
     const vg = G.createRadialGradient(W / 2, H / 2, W * 0.3, W / 2, H / 2, W * 0.7);
     vg.addColorStop(0, 'rgba(0,0,0,0)');
     vg.addColorStop(1, 'rgba(0,0,0,0.4)');
     G.fillStyle = vg;
     G.fillRect(0, 0, W, H);
 
-    // RGB shift on shake
     if (camShake > 0.5) {
         G.globalCompositeOperation = 'lighten';
         G.fillStyle = `rgba(255,0,0,${camShake * 0.02})`;
@@ -615,16 +704,13 @@ function drawCRT() {
 
 // Menu screen
 function drawMenu() {
-    // Background
     G.fillStyle = '#0a0a1a';
     G.fillRect(0, 0, W, H);
 
-    // Animated field preview
     const previewY = H * 0.6;
     G.fillStyle = '#1a5c1a';
     G.fillRect(0, previewY, W, H - previewY);
 
-    // Goal posts in background
     G.strokeStyle = '#fff';
     G.lineWidth = 2;
     G.beginPath();
@@ -636,7 +722,6 @@ function drawMenu() {
     G.lineTo(W - 80, previewY);
     G.stroke();
 
-    // Title
     G.fillStyle = '#f1c40f';
     G.font = 'bold 24px monospace';
     G.textAlign = 'center';
@@ -646,23 +731,19 @@ function drawMenu() {
     G.font = 'bold 14px monospace';
     G.fillText("'98", W / 2, 78);
 
-    // Subtitle
     G.fillStyle = '#aaa';
     G.font = '7px monospace';
     G.fillText('RETRO ARCADE SOCCER SHOOTER', W / 2, 95);
 
-    // Animated ball
     const ballBob = Math.sin(frameCount * 0.05) * 5;
     drawBallSprite(W / 2, 120 + ballBob, 8);
 
-    // Instructions
     G.fillStyle = '#fff';
     G.font = '8px monospace';
     G.fillText('MOUSE / ARROWS — AIM', W / 2, 155);
     G.fillText('SPACE — SHOOT', W / 2, 170);
     G.fillText('CLICK — RESTART', W / 2, 185);
 
-    // Start prompt
     const blink = Math.sin(frameCount * 0.08) > 0;
     if (blink) {
         G.fillStyle = '#2ecc71';
@@ -670,7 +751,6 @@ function drawMenu() {
         G.fillText('>> PRESS SPACE TO KICK OFF <<', W / 2, 215);
     }
 
-    // CRT effect
     drawCRT();
 }
 
@@ -688,12 +768,10 @@ function drawGameOver() {
     G.font = '12px monospace';
     G.fillText(`FINAL SCORE: ${score}/${MAX_ROUNDS}`, W / 2, 80);
 
-    // Accuracy
     const acc = shots > 0 ? Math.round((score / shots) * 100) : 0;
     G.fillText(`ACCURACY: ${acc}%`, W / 2, 100);
     G.fillText(`BEST STREAK: ${bestStreak}`, W / 2, 118);
 
-    // Rating
     let rating = '🐣 ROOKIE';
     if (score >= 3) rating = '⚽ AMATEUR';
     if (score >= 5) rating = '🌟 SEMI-PRO';
@@ -705,7 +783,6 @@ function drawGameOver() {
     G.font = 'bold 12px monospace';
     G.fillText(rating, W / 2, 145);
 
-    // Restart
     const blink = Math.sin(frameCount * 0.08) > 0;
     if (blink) {
         G.fillStyle = '#2ecc71';
@@ -724,7 +801,10 @@ function updateCrowd() {
     }
 }
 
-// Game logic
+// ============================================================
+// GAME LOGIC
+// ============================================================
+
 function startRound() {
     round++;
     if (round > MAX_ROUNDS) {
@@ -752,8 +832,9 @@ function startRound() {
     resultTimer = 0;
     slowMo = false;
     camShake = 0;
+    ballFrame = 0;
+    legFrame = 0;
 
-    // Pre-decide keeper direction
     keeperTargetX = W / 2 + (Math.random() - 0.5) * 80;
 }
 
@@ -763,7 +844,6 @@ function shoot() {
     kickTimer = 0;
     kickSound();
     
-    // Calculate ball trajectory
     const targetX = aimX;
     const targetY = aimY;
     const dx = targetX - W / 2;
@@ -773,7 +853,6 @@ function shoot() {
     ballVY = dy * 0.05;
     ballVZ = 4 + Math.random() * 2;
 
-    // Random curved shot (10% chance)
     if (Math.random() < 0.1) {
         curvedShot = true;
         curveAmount = (Math.random() - 0.5) * 0.8;
@@ -788,19 +867,19 @@ function updateFlight() {
     ballX += ballVX * dt;
     ballY += ballVY * dt;
     ballZ += ballVZ * dt;
-    ballVZ -= 0.15 * dt; // Gravity
-    ballVY -= 0.02 * dt; // Slight upward
+    ballVZ -= 0.15 * dt;
+    ballVY -= 0.02 * dt;
 
-    // Curved shot effect
     if (curvedShot) {
         ballVX += curveAmount * 0.1 * dt;
     }
 
-    // Trail
     ballTrail.push({ x: ballX, y: ballY });
     if (ballTrail.length > 15) ballTrail.shift();
 
-    // Update keeper AI
+    // Animate ball rotation
+    ballFrame = (ballFrame + 1) % 18;
+
     if (!keeperDiving && ballZ > 2) {
         keeperDiving = true;
         keeperDiveDir = ballX < W / 2 ? -1 : 1;
@@ -810,12 +889,10 @@ function updateFlight() {
         keeperDiveY = Math.min(8, keeperDiveY + 0.5 * dt);
     }
 
-    // Check if ball reached goal
     if (ballY <= 85 && ballZ > 0) {
         checkOutcome();
     }
 
-    // Ball out of bounds
     if (ballY < 20 || ballX < 30 || ballX > W - 30 || ballZ < -5) {
         outcome = 'MISS';
         state = 'RESULT';
@@ -823,7 +900,6 @@ function updateFlight() {
         shots++;
     }
 
-    // Slow mo on close calls
     if (ballY < 100 && !slowMo) {
         const distToKeeper = Math.abs(ballX - keeperX);
         if (distToKeeper < 30) {
@@ -845,7 +921,6 @@ function checkOutcome() {
 
     shots++;
 
-    // Check if hit post
     const postWidth = 4;
     if ((ballX < gx1 + postWidth && ballX > gx1 - postWidth) ||
         (ballX < gx2 + postWidth && ballX > gx2 - postWidth) ||
@@ -859,9 +934,7 @@ function checkOutcome() {
         return;
     }
 
-    // Check if inside goal frame
     if (ballX > gx1 + 3 && ballX < gx2 - 3 && ballY > gy + 2 && ballY < gy + gh) {
-        // Check if keeper saves
         const distToKeeper = Math.abs(ballX - keeperX);
         if (distToKeeper < 15 && keeperDiving) {
             outcome = 'SAVE';
@@ -870,7 +943,6 @@ function checkOutcome() {
             spawnParticles(ballX, ballY, 8, '#2ecc71', 2);
             missSound();
         } else {
-            // GOAL!
             if (curvedShot) {
                 outcome = 'CURVED';
                 score++;
@@ -891,7 +963,6 @@ function checkOutcome() {
             if (streak > bestStreak) bestStreak = streak;
         }
     } else {
-        // Miss (inside goal area but outside frame)
         outcome = 'MISS';
         missSound();
         streak = 0;
@@ -900,7 +971,10 @@ function checkOutcome() {
     state = 'RESULT';
 }
 
-// Update
+// ============================================================
+// UPDATE & RENDER
+// ============================================================
+
 function update() {
     frameCount++;
     camBob += 0.05;
@@ -920,25 +994,23 @@ function update() {
     if (state === 'KICKING') {
         kickTimer++;
         if (kickTimer < 10) {
-            kickPhase = 1; // Windup
+            kickPhase = 1;
             legAngle = kickTimer / 10;
         } else if (kickTimer < 15) {
-            kickPhase = 2; // Strike
+            kickPhase = 2;
             legAngle = 1 - (kickTimer - 10) / 5;
         } else if (kickTimer < 25) {
-            kickPhase = 3; // Follow through
+            kickPhase = 3;
             legAngle = (kickTimer - 15) / 10;
         } else {
             state = 'FLIGHT';
-            flightTimer = 0;
+          flightTimer = 0;
             kickPhase = 0;
         }
     }
 
-    // Flight update
     updateFlight();
 
-    // Result timer
     if (state === 'RESULT') {
         resultTimer++;
         if (resultTimer > 90) {
@@ -946,17 +1018,14 @@ function update() {
         }
     }
 
-    // Camera bob
     if (state === 'AIMING') {
         camBob += 0.02;
     }
 }
 
-// Render
 function render() {
     G.clearRect(0, 0, W, H);
 
-    // Apply camera shake
     G.save();
     if (camShake > 0.1) {
         G.translate(
@@ -984,7 +1053,6 @@ function render() {
 
     G.restore();
 
-    // Scale to screen
     X.imageSmoothingEnabled = false;
     X.clearRect(0, 0, C.width, C.height);
     X.drawImage(buf, 0, 0, C.width, C.height);
@@ -1031,7 +1099,6 @@ document.addEventListener('mousemove', e => {
     const scaleY = H / rect.height;
     aimX = (e.clientX - rect.left) * scaleX;
     aimY = (e.clientY - rect.top) * scaleY;
-    // Clamp aim to goal area
     aimX = Math.max(80, Math.min(W - 80, aimX));
     aimY = Math.max(50, Math.min(120, aimY));
 });
@@ -1046,7 +1113,6 @@ document.addEventListener('click', e => {
     }
 });
 
-// Arrow key aiming
 function updateAimFromKeys() {
     if (state !== 'AIMING') return;
     const speed = 2;
@@ -1069,14 +1135,16 @@ function loop() {
 // Init
 window.addEventListener('resize', resize);
 resize();
-loop();
 
-// Welcome message
-console.log(`
-%c PIXEL STRIKER '98 %c
+// Load sprites then start
+loadSprites().then(() => {
+    loop();
+    console.log(`
+%c PIXEL STRIKER '98 %c SPRITE EDITION
  Retro Arcade Soccer Shooter
  Controls: SPACE=Shoot | Mouse/Arrows=Aim | Click=Restart
 `, 'background:#f1c40f;color:#000;padding:4px 8px;font-weight:bold', '');
+});
 </script>
 </body>
 </html>
